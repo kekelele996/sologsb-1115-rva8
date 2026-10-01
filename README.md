@@ -63,7 +63,7 @@ sologsb-1115/
 │   ├── public/favicon.svg
 │   └── src/
 │       ├── types/              # specimen.ts / site.ts / storage.ts / determination.ts / index.ts
-│       ├── stores/             # specimenStore / siteStore / storageStore / determinationStore（Zustand）
+│       ├── stores/             # specimenStore / siteStore / storageStore / determinationStore / receiptStore（Zustand）
 │       ├── components/common/  # SpecimenCard / StatusTag / CabinetGrid / SitePicker
 │       ├── hooks/              # usePersistentStore / useSpecimenFilter
 │       ├── pages/              # SpecimensPage / SitesPage / CollectPage / DeterminationPage / StoragePage
@@ -77,13 +77,21 @@ sologsb-1115/
 | --- | --- | --- |
 | Specimen 标本 | 编号、目/科/属/种、暂定名、采集日期与人、性别虫态、体长、采集方式、数量、鉴定状态 | `specimens` |
 | CollectSite 采集地 | 代码、名称、行政区、经纬度海拔、生境类型、小生境、微气候、采集日期区间 | `sites` |
-| Storage 保藏位置 | 保藏方式、柜/抽屉/盒/插位序号、入柜日期、经手人 | `storages` |
 | Determination 鉴定记录 | 鉴定人、日期、结论（学名）、依据文献、置信度、是否需复核 | `determinations` |
+| Receipt 接收批次（库房侧） | 批次号、接收决定（已接收/退回）、核对后的保藏方式、目标柜、经手人、标本快照（编号+鉴定状态） | `receipts` |
+| Storage 保藏位置（库房侧） | 所属接收批次、保藏方式、柜/抽屉/盒/插位序号、入柜日期、经手人 | `storages` |
 
 - 数据库名 `gbinsectlog`，`meta` 表保存 `schemaVersion`；
 - `version(2)` 升级迁移会为历史标本补齐默认采集方式（扫网）；
-- 标本编号规则：`采集地代码-年份-流水号`（如 `QLB-2026-0007`），提交时自动分配并查重；
+- `version(3)` 升级迁移把历史柜位归并成接收批次（按入柜日期+经手人+保藏方式+柜），回填 `receiptId` 补齐库房侧关系；缺字段的老备份照 v2 的写法补默认值；
+- 标本编号规则：`采集地代码-年份-流水号`（如 `QLB-2026-0007`），提交时自动分配并查重；接收批次号规则：`IN-年份-流水号`；
 - 数据仅存于浏览器本地，容器无状态、不挂载命名卷。
+
+### 两侧状态各自持有
+
+- **野外队**：标本、采集地、鉴定结论（`specimens` / `sites` / `determinations`），补改标本资料只写这三张表；
+- **库房**：接收决定与柜位容量（`receipts` / `storages`），接收、退回、出柜只写这两张表；
+- 接收那一刻的标本编号与鉴定状态以快照形式落在批次台账里，野外队之后的改动不会把库房排好的柜位与台账带走；库房上柜时也能看到每份标本当时的鉴定状态。
 
 ## 六、主要页面
 
@@ -93,11 +101,15 @@ sologsb-1115/
 | `/collect` | 采集登记：选择采集地后自动带出生境/小生境/微气候，一次提交多条同批次标本，编号自动生成并查重 |
 | `/sites` | 采集地管理：经纬度格式校验、各地采集次数统计、50 米内邻近采集地提示与一键合并 |
 | `/determination` | 鉴定工作流：待鉴定队列逐条处理，落鉴定记录并自动推进标本状态（已鉴定 / 待复核） |
-| `/storage` | 保藏柜位图：柜-抽屉-盒-位三级展开，空位/占用一目了然，拖拽入柜，重复占用给出占用提示 |
+| `/storage` | 保藏柜位图：按批接收（核对保藏方式、容量预览），柜-抽屉-盒-位三级展开，拖拽单件入柜，批次台账可查可重新接收 |
 
 ## 七、业务约定
 
 - 采集地代码是标本编号前缀，代码重复会被拒绝；
 - 坐标 50 米内视为同一采集地，页面上给出合并提示，合并会把原采集地标本自动改挂；
 - 鉴定记录提交后自动把标本状态推进为「已鉴定」，勾选「需复核」则置为「待复核」；
+- 库房按批接收时先核对整批保藏方式（整批统一），再按当前柜的空余插位顺序分配：
+  - 容量够就整批接收；不够就分批收下能放的，放不下的整批退回并释放本次占用的插位；
+  - 已经接收的批次不动，退回批次留在台账里，腾出容量后可一键重新接收；
+- 接收与退回写在一个事务里，中途失败全部回滚，不会留下半截占用的插位；
 - 同一柜位（柜-屉-盒-位）只允许一份标本，冲突时列出已有标本编号。

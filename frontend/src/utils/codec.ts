@@ -64,6 +64,14 @@ export function encodeSlot(cabinet: string, drawer: number, box: number, slot: n
   return `${cabinet.toUpperCase()}-D${drawer}-B${String(box).padStart(2, '0')}-S${String(slot).padStart(2, '0')}`
 }
 
+/** 插位坐标 */
+export interface SlotPosition {
+  cabinet: string
+  drawer: number
+  box: number
+  slot: number
+}
+
 export function decodeSlot(text: string): { cabinet: string; drawer: number; box: number; slot: number } | null {
   const match = /^([A-Za-z0-9]+)-D(\d+)-B(\d+)-S(\d+)$/.exec(text.trim())
   if (!match) return null
@@ -79,6 +87,47 @@ export function storageSlotText(storage: Storage): string {
 export function findSlotConflicts(storages: Storage[], target: Storage): Storage[] {
   const key = storageSlotText(target)
   return storages.filter((item) => item.id !== target.id && storageSlotText(item) === key)
+}
+
+/** 柜内空余插位：按 抽屉 → 盒 → 插位 顺序列出，已接收批次占用的位置不动 */
+export function freeSlots(storages: Storage[], cabinet: string, drawers: number, boxes: number, slots: number): SlotPosition[] {
+  const key = cabinet.toUpperCase()
+  const occupied = new Set(
+    storages.filter((item) => item.cabinet.toUpperCase() === key).map((item) => storageSlotText(item))
+  )
+  const free: SlotPosition[] = []
+  for (let drawer = 1; drawer <= drawers; drawer += 1) {
+    for (let box = 1; box <= boxes; box += 1) {
+      for (let slot = 1; slot <= slots; slot += 1) {
+        if (!occupied.has(encodeSlot(key, drawer, box, slot))) {
+          free.push({ cabinet: key, drawer, box, slot })
+        }
+      }
+    }
+  }
+  return free
+}
+
+/** 接收批次号：IN-年份-流水号，如 IN-2026-0003 */
+export function buildBatchNo(year: number | string, serial: number): string {
+  return `IN-${year}-${String(serial).padStart(4, '0')}`
+}
+
+/** 解析接收批次号 */
+export function parseBatchNo(batchNo: string): { year: string; serial: number } | null {
+  const match = /^IN-(\d{4})-(\d+)$/.exec(batchNo.trim())
+  if (!match) return null
+  return { year: match[1], serial: Number(match[2]) }
+}
+
+/** 依据已有批次号生成当年下一个流水号 */
+export function nextBatchSerial(year: number | string, existingBatchNos: string[]): number {
+  const serials = existingBatchNos
+    .map((batchNo) => parseBatchNo(batchNo))
+    .filter((parsed): parsed is { year: string; serial: number } => parsed !== null)
+    .filter((parsed) => parsed.year === String(year))
+    .map((parsed) => parsed.serial)
+  return serials.length > 0 ? Math.max(...serials) + 1 : 1
 }
 
 /** 标本摘要文本 */

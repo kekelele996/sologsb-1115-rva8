@@ -1,22 +1,25 @@
 import { useStore } from 'zustand'
 import type { StoreApi, UseBoundStore } from 'zustand'
 import Dexie, { type Table } from 'dexie'
-import type { CollectSite, Determination, Specimen, Storage } from '@/types'
+import type { CollectSite, Determination, Receipt, Specimen, Storage } from '@/types'
+import { buildBatchNo } from '@/utils/codec'
+import { uid } from '@/utils/id'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 四张业务表 + 元数据表 */
+/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 / 接收批次 五张业务表 + 元数据表 */
 class InsectLogDb extends Dexie {
   specimens!: Table<Specimen, string>
   sites!: Table<CollectSite, string>
   storages!: Table<Storage, string>
   determinations!: Table<Determination, string>
+  receipts!: Table<Receipt, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -29,7 +32,7 @@ class InsectLogDb extends Dexie {
       meta: 'key'
     })
     // v2：新增「采集方式」字段，迁移时为历史标本补齐默认采集方式（扫网）
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         specimens: 'id, code, order, family, status, siteId, collectDate',
         sites: 'id, code, name, habitat',
@@ -46,6 +49,81 @@ class InsectLogDb extends Dexie {
               specimen.method = '扫网'
             }
           })
+      })
+    // v3：库房侧自立台账——新增「接收批次」表，保藏位置归属到批次；
+    // 历史柜位第一次打开时迁移到库房侧补齐关系，缺字段的老备份照 v2 的写法补默认值
+    this.version(SCHEMA_VERSION)
+      .stores({
+        specimens: 'id, code, order, family, status, siteId, collectDate',
+        sites: 'id, code, name, habitat',
+        storages: 'id, specimenId, receiptId, cabinet, drawer',
+        determinations: 'id, specimenId, determiner, date',
+        receipts: 'id, batchNo, decision, date',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const today = new Date().toISOString().slice(0, 10)
+        // 缺字段的老备份照 v2 的导入写法补默认值
+        await tx
+          .table<Specimen, string>('specimens')
+          .toCollection()
+          .modify((specimen) => {
+            if (!specimen.method) specimen.method = '扫网'
+            if (!specimen.status) specimen.status = '待鉴定'
+            if (!specimen.quantity) specimen.quantity = 1
+          })
+        await tx
+          .table<Storage, string>('storages')
+          .toCollection()
+          .modify((storage) => {
+            if (!storage.method) storage.method = '针插'
+            if (!storage.storedDate) storage.storedDate = today
+            if (!storage.handler) storage.handler = ''
+          })
+        // 历史柜位迁移到库房侧：按 入柜日期+经手人+保藏方式+柜 归并成接收批次，回填 receiptId 补齐关系
+        const storages = await tx.table<Storage, string>('storages').toArray()
+        if (storages.length === 0) return
+        const specimens = await tx.table<Specimen, string>('specimens').toArray()
+        const specimenMap = new Map(specimens.map((specimen) => [specimen.id, specimen]))
+        const groups = new Map<string, Storage[]>()
+        storages.forEach((storage) => {
+          const key = [storage.storedDate, storage.handler, storage.method, storage.cabinet].join('|')
+          const group = groups.get(key)
+          if (group) group.push(storage)
+          else groups.set(key, [storage])
+        })
+        const serialByYear = new Map<string, number>()
+        const receipts: Receipt[] = []
+        groups.forEach((rows) => {
+          const first = rows[0]
+          const year = (first.storedDate || today).slice(0, 4)
+          const serial = (serialByYear.get(year) ?? 0) + 1
+          serialByYear.set(year, serial)
+          const receipt: Receipt = {
+            id: uid('rcp'),
+            batchNo: buildBatchNo(year, serial),
+            decision: '已接收',
+            method: first.method,
+            cabinet: first.cabinet,
+            handler: first.handler,
+            date: first.storedDate,
+            note: '历史数据迁移补录',
+            items: rows.map((storage) => {
+              const specimen = specimenMap.get(storage.specimenId)
+              return {
+                specimenId: storage.specimenId,
+                code: specimen?.code ?? storage.specimenId,
+                status: specimen?.status ?? '待鉴定'
+              }
+            })
+          }
+          receipts.push(receipt)
+          rows.forEach((storage) => {
+            storage.receiptId = receipt.id
+          })
+        })
+        await tx.table<Receipt, string>('receipts').bulkPut(receipts)
+        await tx.table<Storage, string>('storages').bulkPut(storages)
       })
   }
 }
@@ -238,10 +316,28 @@ export async function seedDemoData(): Promise<void> {
     }
   ])
 
+  await db.receipts.bulkPut([
+    {
+      id: 'rcp_001',
+      batchNo: `IN-${today.slice(0, 4)}-0001`,
+      decision: '已接收',
+      method: '针插',
+      cabinet: 'C01',
+      handler: '覃羽',
+      date: today,
+      note: '首批接收',
+      items: [
+        { specimenId: 'sp_001', code: 'QLB-2026-0001', status: '已鉴定' },
+        { specimenId: 'sp_002', code: 'QLB-2026-0002', status: '初鉴' }
+      ]
+    }
+  ])
+
   await db.storages.bulkPut([
     {
       id: 'stg_001',
       specimenId: 'sp_001',
+      receiptId: 'rcp_001',
       method: '针插',
       cabinet: 'C01',
       drawer: 1,
@@ -253,6 +349,7 @@ export async function seedDemoData(): Promise<void> {
     {
       id: 'stg_002',
       specimenId: 'sp_002',
+      receiptId: 'rcp_001',
       method: '针插',
       cabinet: 'C01',
       drawer: 1,
