@@ -1,3 +1,5 @@
+import type { StorageMethod } from './storage'
+
 /** 采集方式 */
 export const COLLECT_METHODS = ['扫网', '灯诱', '巴氏罐诱', '马氏网', '徒手'] as const
 export type CollectMethod = (typeof COLLECT_METHODS)[number]
@@ -37,6 +39,11 @@ export interface Specimen {
   method: CollectMethod
   /** 个体数量 */
   quantity: number
+  /**
+   * 保藏方式（野外侧字段）：野外队采集处理时记录，
+   * 库房按批接收时据此核对；库房侧不修改本字段。
+   */
+  preserveMethod: StorageMethod
   status: DetStatus
   determiner: string
   siteId: string

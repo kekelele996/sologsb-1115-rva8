@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import type { CollectMethod, Sex, Specimen, Stage } from '@/types'
-import { COLLECT_METHODS, ORDERS, SEXES, STAGES } from '@/types'
+import type { CollectMethod, Sex, Specimen, Stage, StorageMethod } from '@/types'
+import { COLLECT_METHODS, ORDERS, SEXES, STAGES, STORAGE_METHODS } from '@/types'
 import SpecimenCard from '@/components/common/SpecimenCard'
 import SitePicker from '@/components/common/SitePicker'
 import { usePersistentStore } from '@/hooks/usePersistentStore'
@@ -20,6 +20,8 @@ interface DraftRow {
   stage: Stage
   bodyLength: string
   method: CollectMethod
+  /** 保藏方式（野外队采集处理时记录，库房接收时核对） */
+  preserveMethod: StorageMethod
   quantity: string
   note: string
 }
@@ -35,6 +37,7 @@ const newDraft = (): DraftRow => ({
   stage: '成虫',
   bodyLength: '',
   method: '扫网',
+  preserveMethod: '针插',
   quantity: '1',
   note: ''
 })
@@ -112,6 +115,7 @@ export default function CollectPage(): JSX.Element {
       stage: draft.stage,
       bodyLength: Number(draft.bodyLength) || 0,
       method: draft.method,
+      preserveMethod: draft.preserveMethod,
       quantity: Number(draft.quantity) || 1,
       status: '待鉴定',
       determiner: '',
@@ -196,6 +200,7 @@ export default function CollectPage(): JSX.Element {
                   <th className="border border-slate-200 px-2 py-1">虫态</th>
                   <th className="border border-slate-200 px-2 py-1">体长mm</th>
                   <th className="border border-slate-200 px-2 py-1">采集方式</th>
+                  <th className="border border-slate-200 px-2 py-1">保藏方式</th>
                   <th className="border border-slate-200 px-2 py-1">数量</th>
                   <th className="border border-slate-200 px-2 py-1">操作</th>
                 </tr>
@@ -255,6 +260,19 @@ export default function CollectPage(): JSX.Element {
                         onChange={(e) => patchDraft(draft.id, { method: e.target.value as CollectMethod })}
                       >
                         {COLLECT_METHODS.map((method) => (
+                          <option key={method} value={method}>
+                            {method}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td className="border border-slate-200 px-1 py-1">
+                      <select
+                        className="field-input"
+                        value={draft.preserveMethod}
+                        onChange={(e) => patchDraft(draft.id, { preserveMethod: e.target.value as StorageMethod })}
+                      >
+                        {STORAGE_METHODS.map((method) => (
                           <option key={method} value={method}>
                             {method}
                           </option>

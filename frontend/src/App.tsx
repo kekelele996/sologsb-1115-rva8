@@ -18,9 +18,13 @@ export default function AppLayout(): JSX.Element {
   const specimens = usePersistentStore(specimenStore, (state) => state.rows)
   const sites = usePersistentStore(siteStore, (state) => state.rows)
   const storages = usePersistentStore(storageStore, (state) => state.rows)
+  const receipts = usePersistentStore(storageStore, (state) => state.receipts)
   const determinations = usePersistentStore(determinationStore, (state) => state.rows)
 
   const pending = specimens.filter((item) => item.status === '待鉴定').length
+  const acceptedIds = new Set(receipts.filter((item) => item.decision === 'accepted').map((item) => item.specimenId))
+  const pendingReceipt = specimens.filter((item) => !acceptedIds.has(item.id)).length
+  const returnedCount = receipts.filter((item) => item.decision === 'returned').length
 
   return (
     <div className="flex min-h-screen">
@@ -67,6 +71,16 @@ export default function AppLayout(): JSX.Element {
             <dt>已入柜</dt>
             <dd className="font-semibold">{storages.length}</dd>
           </div>
+          <div className="flex justify-between">
+            <dt>待接收</dt>
+            <dd className="font-semibold">{pendingReceipt}</dd>
+          </div>
+          {returnedCount > 0 ? (
+            <div className="flex justify-between">
+              <dt>退回批次</dt>
+              <dd className="font-semibold">{returnedCount}</dd>
+            </div>
+          ) : null}
           <div className="flex justify-between">
             <dt>鉴定记录</dt>
             <dd className="font-semibold">{determinations.length}</dd>

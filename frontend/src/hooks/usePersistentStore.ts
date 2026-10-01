@@ -1,22 +1,25 @@
 import { useStore } from 'zustand'
 import type { StoreApi, UseBoundStore } from 'zustand'
 import Dexie, { type Table } from 'dexie'
-import type { CollectSite, Determination, Specimen, Storage } from '@/types'
+import type { Cabinet, CollectSite, Determination, Receipt, Specimen, Storage } from '@/types'
+import { normalizeBackup } from '@/utils/migrate'
 
 /** IndexedDB 数据结构版本号 */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export interface MetaRow {
   key: string
   value: number
 }
 
-/** Dexie 封装：标本 / 采集地 / 保藏位置 / 鉴定记录 四张业务表 + 元数据表 */
+/** Dexie 封装：标本 / 采集地 / 鉴定记录 属野外侧；保藏位置 / 接收决定 / 柜位容量 属库房侧 + 元数据表 */
 class InsectLogDb extends Dexie {
   specimens!: Table<Specimen, string>
   sites!: Table<CollectSite, string>
   storages!: Table<Storage, string>
   determinations!: Table<Determination, string>
+  receipts!: Table<Receipt, string>
+  cabinets!: Table<Cabinet, string>
   meta!: Table<MetaRow, string>
 
   constructor() {
@@ -29,7 +32,7 @@ class InsectLogDb extends Dexie {
       meta: 'key'
     })
     // v2：新增「采集方式」字段，迁移时为历史标本补齐默认采集方式（扫网）
-    this.version(SCHEMA_VERSION)
+    this.version(2)
       .stores({
         specimens: 'id, code, order, family, status, siteId, collectDate',
         sites: 'id, code, name, habitat',
@@ -46,6 +49,35 @@ class InsectLogDb extends Dexie {
               specimen.method = '扫网'
             }
           })
+      })
+    // v3：采集登记与保藏上柜分离为野外侧 / 库房侧
+    // - 库房侧新增 receipts（接收决定）与 cabinets（柜位容量）两张表
+    // - 历史上柜记录补齐 receiptId / specimenCode 并生成「已接收」决定
+    // - 历史标本补齐保藏方式，柜位容量按上柜记录中的柜号补齐
+    this.version(SCHEMA_VERSION)
+      .stores({
+        specimens: 'id, code, order, family, status, siteId, collectDate, preserveMethod',
+        sites: 'id, code, name, habitat',
+        storages: 'id, receiptId, specimenId, specimenCode, cabinet, drawer',
+        determinations: 'id, specimenId, determiner, date',
+        receipts: 'id, batchNo, specimenId, decision',
+        cabinets: 'id, code',
+        meta: 'key'
+      })
+      .upgrade(async (tx) => {
+        const [specimens, storages, sites, determinations] = await Promise.all([
+          tx.table<Specimen, string>('specimens').toArray(),
+          tx.table<Storage, string>('storages').toArray(),
+          tx.table<CollectSite, string>('sites').toArray(),
+          tx.table<Determination, string>('determinations').toArray()
+        ])
+        const normalized = normalizeBackup({ specimens, storages, sites, determinations })
+        await Promise.all([
+          tx.table<Specimen, string>('specimens').bulkPut(normalized.specimens),
+          tx.table<Storage, string>('storages').bulkPut(normalized.storages),
+          tx.table<Receipt, string>('receipts').bulkPut(normalized.receipts),
+          tx.table<Cabinet, string>('cabinets').bulkPut(normalized.cabinets)
+        ])
       })
   }
 }
@@ -148,6 +180,7 @@ export async function seedDemoData(): Promise<void> {
       bodyLength: 28.4,
       method: '徒手',
       quantity: 1,
+      preserveMethod: '针插',
       status: '已鉴定',
       determiner: '覃羽',
       siteId: 'site_qlb',
@@ -168,6 +201,7 @@ export async function seedDemoData(): Promise<void> {
       bodyLength: 16.2,
       method: '灯诱',
       quantity: 3,
+      preserveMethod: '针插',
       status: '初鉴',
       determiner: '覃羽',
       siteId: 'site_qlb',
@@ -188,6 +222,7 @@ export async function seedDemoData(): Promise<void> {
       bodyLength: 38.1,
       method: '扫网',
       quantity: 2,
+      preserveMethod: '针插',
       status: '待复核',
       determiner: '蓝澈',
       siteId: 'site_shr',
@@ -208,6 +243,7 @@ export async function seedDemoData(): Promise<void> {
       bodyLength: 6.5,
       method: '巴氏罐诱',
       quantity: 12,
+      preserveMethod: '浸液',
       status: '待鉴定',
       determiner: '',
       siteId: 'site_shr',
@@ -238,10 +274,41 @@ export async function seedDemoData(): Promise<void> {
     }
   ])
 
+  await db.cabinets.bulkPut([
+    { id: 'cab_c01', code: 'C01', drawers: 2, boxes: 3, slots: 8 }
+  ])
+
+  await db.receipts.bulkPut([
+    {
+      id: 'rec_001',
+      batchNo: 'HISTORY',
+      specimenId: 'sp_001',
+      specimenCode: 'QLB-2026-0001',
+      method: '针插',
+      decision: 'accepted',
+      reason: '',
+      receivedDate: today,
+      handler: '覃羽'
+    },
+    {
+      id: 'rec_002',
+      batchNo: 'HISTORY',
+      specimenId: 'sp_002',
+      specimenCode: 'QLB-2026-0002',
+      method: '针插',
+      decision: 'accepted',
+      reason: '',
+      receivedDate: today,
+      handler: '覃羽'
+    }
+  ])
+
   await db.storages.bulkPut([
     {
       id: 'stg_001',
+      receiptId: 'rec_001',
       specimenId: 'sp_001',
+      specimenCode: 'QLB-2026-0001',
       method: '针插',
       cabinet: 'C01',
       drawer: 1,
@@ -252,7 +319,9 @@ export async function seedDemoData(): Promise<void> {
     },
     {
       id: 'stg_002',
+      receiptId: 'rec_002',
       specimenId: 'sp_002',
+      specimenCode: 'QLB-2026-0002',
       method: '针插',
       cabinet: 'C01',
       drawer: 1,
